@@ -793,7 +793,7 @@ function ExerciseCard({
   );
 }
 
-export default function GymTrackerReactPWAv2() {
+export default function App() {
   const [ready, setReady] = useState(false);
   const {
     needRefresh: [needRefresh, setNeedRefresh],
