@@ -6,13 +6,10 @@ import {
   ChevronDown,
   Clock3,
   DatabaseBackup,
-  Dumbbell,
   History,
   Image as ImageIcon,
   NotebookPen,
   Play,
-  Plus,
-  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -42,6 +39,7 @@ type Exercise = {
   reps: number | null;
   time: string | null;
   sets: number | null;
+  completedSets: number;
   notes: string;
   configs: MachineConfig[];
   images: string[];
@@ -312,6 +310,10 @@ const normalizeExercise = (exercise: unknown, fallbackOrder?: number): Exercise 
     return Number.isFinite(n) ? n : null;
   };
 
+  const sets = numberField(raw.sets);
+  const completedSetsRaw = numberField(raw.completedSets) ?? 0;
+  const completedSets = sets ? Math.max(0, Math.min(completedSetsRaw, sets)) : 0;
+
   return {
     id: typeof raw.id === "string" && raw.id ? raw.id : uid(),
     name,
@@ -319,7 +321,8 @@ const normalizeExercise = (exercise: unknown, fallbackOrder?: number): Exercise 
     weight: numberField(raw.weight),
     reps: numberField(raw.reps),
     time: typeof raw.time === "string" && raw.time.trim() ? raw.time.trim() : null,
-    sets: numberField(raw.sets),
+    sets,
+    completedSets,
     notes: typeof raw.notes === "string" ? raw.notes : "",
     configs,
     images,
@@ -456,6 +459,7 @@ const cloneExerciseForSession = (exercise: Exercise, forcedOrder?: number): Exer
   order: forcedOrder ?? exercise.order ?? 1,
   done: false,
   doneAt: null,
+  completedSets: 0,
   createdAt: nowIso(),
 });
 
@@ -488,6 +492,7 @@ const templateExercisesFromSession = (exercises: Exercise[]) =>
         order: exercise.order ?? index + 1,
         done: false,
         doneAt: null,
+        completedSets: 0,
         createdAt: nowIso(),
       }))
   );
@@ -642,6 +647,8 @@ function ExerciseCard({
   exercise,
   mode,
   onToggleDone,
+  onCompleteSet,
+  onUndoSet,
   onDelete,
   onMoveUp,
   onMoveDown,
@@ -652,6 +659,8 @@ function ExerciseCard({
   exercise: Exercise;
   mode: "current" | "history" | "routine";
   onToggleDone?: () => void;
+  onCompleteSet?: () => void;
+  onUndoSet?: () => void;
   onDelete?: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
@@ -663,7 +672,7 @@ function ExerciseCard({
     ["Peso", exercise.weight !== null ? `${exercise.weight} kg` : "—"],
     ["Repeticiones", exercise.reps ?? "—"],
     ["Tiempo", exercise.time || "—"],
-    ["Series", exercise.sets ?? "—"],
+    ["Series", exercise.sets ? `${exercise.completedSets}/${exercise.sets}` : "—"],
     [
       mode === "current" ? "Realizado" : mode === "routine" ? "Orden base" : "Último registro",
       mode === "current"
@@ -709,6 +718,24 @@ function ExerciseCard({
         <div className="flex flex-wrap gap-2">
           {mode === "current" ? (
             <>
+              {exercise.sets ? (
+                <>
+                  <button
+                    className="rounded-xl bg-sky-500 px-3 py-2 text-sm font-medium text-white disabled:opacity-50"
+                    onClick={onCompleteSet}
+                    disabled={exercise.completedSets >= exercise.sets}
+                  >
+                    Completar 1 serie
+                  </button>
+                  <button
+                    className="rounded-xl bg-amber-500 px-3 py-2 text-sm font-medium text-slate-950 disabled:opacity-50"
+                    onClick={onUndoSet}
+                    disabled={exercise.completedSets <= 0}
+                  >
+                    Restar 1 serie
+                  </button>
+                </>
+              ) : null}
               <button className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-white" onClick={onToggleDone}>
                 {exercise.done ? "Desmarcar" : "Completar"}
               </button>
@@ -799,12 +826,12 @@ export default function App() {
     needRefresh: [needRefresh, setNeedRefresh],
     updateServiceWorker,
   } = useRegisterSW({
-    onRegisteredSW(_swUrl, registration) {
+    onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
       if (!registration) return;
       registration.update();
       setInterval(() => registration.update(), 60 * 1000);
     },
-    onRegisterError(error) {
+    onRegisterError(error: unknown) {
       console.error("SW registration error", error);
     },
   });
@@ -816,6 +843,7 @@ export default function App() {
   const [pendingTemplateImages, setPendingTemplateImages] = useState<string[]>([]);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
   const fileImportRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -904,6 +932,16 @@ export default function App() {
     return label.charAt(0).toUpperCase() + label.slice(1);
   }, [appState.ui.calendarYear, appState.ui.calendarMonth]);
 
+  const selectedCalendarSessions = useMemo(
+    () =>
+      selectedCalendarDate
+        ? appState.historySessions
+            .filter((session) => session.date === selectedCalendarDate)
+            .sort((a, b) => String(a.startTime || "").localeCompare(String(b.startTime || "")))
+        : [],
+    [appState.historySessions, selectedCalendarDate]
+  );
+
   const resetExerciseDraft = () => {
     setExerciseDraft(emptyExerciseDraft());
     setPendingConfigs([]);
@@ -947,6 +985,7 @@ export default function App() {
       reps: toNumberOrNull(exerciseDraft.reps),
       time: exerciseDraft.time.trim() || null,
       sets: toNumberOrNull(exerciseDraft.sets),
+      completedSets: 0,
       notes: exerciseDraft.notes.trim(),
       configs: JSON.parse(JSON.stringify(pendingConfigs)),
       images: [...pendingTemplateImages, ...uploadedImages],
@@ -1083,7 +1122,10 @@ export default function App() {
         ...prev.currentSession,
         exercises: replaceMode
           ? cloneExercisesForSession(routine.exercises)
-          : [...prev.currentSession.exercises, ...cloneExercisesForSession(routine.exercises, nextOrder)],
+          : normalizeExerciseOrders([
+              ...prev.currentSession.exercises,
+              ...cloneExercisesForSession(routine.exercises, nextOrder),
+            ]),
         startTime: replaceMode ? null : prev.currentSession.startTime,
         endTime: replaceMode ? null : prev.currentSession.endTime,
         routineId: routine.id,
@@ -1149,18 +1191,20 @@ export default function App() {
       const done = appState.completedDates.includes(key);
       const isToday = key === today;
       cells.push(
-        <div
+        <button
           key={key}
+          type="button"
           title={formatDateKey(key)}
+          onClick={() => done && setSelectedCalendarDate(key)}
           className={cx(
             "flex min-h-[58px] flex-col items-center justify-center gap-1 rounded-xl border bg-slate-950/70 p-2 text-center",
-            done ? "border-emerald-500/40" : "border-slate-800",
+            done ? "border-emerald-500/40 cursor-pointer" : "border-slate-800 cursor-default",
             isToday && "border-sky-400/40"
           )}
         >
           <div className="text-sm font-medium text-slate-100">{day}</div>
           {done && <div className="h-2 w-2 rounded-full bg-emerald-500" />}
-        </div>
+        </button>
       );
     }
 
@@ -1194,696 +1238,10 @@ export default function App() {
           <TabButton active={appState.ui.activeTab === "backup"} label="Respaldo" icon={DatabaseBackup} onClick={() => updateUi({ activeTab: "backup" })} />
         </div>
 
-        {appState.ui.activeTab === "train" && (
-          <div className="space-y-4">
-            <Section title="Elegir rutina" right={<span className="text-sm text-slate-400">{appState.routines.length} rutinas disponibles</span>}>
-              <div className="grid gap-3 md:grid-cols-[1fr_auto]">
-                <select
-                  className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                  value={appState.currentSession.routineId || ""}
-                  onChange={(e) => {
-                    const selectedId = e.target.value || null;
-                    const selectedRoutine = appState.routines.find((routine) => routine.id === selectedId);
-                    updateCurrentSession({
-                      routineId: selectedId,
-                      routineName: selectedRoutine?.name || null,
-                    });
-                  }}
-                >
-                  <option value="">Selecciona una rutina…</option>
-                  {appState.routines.map((routine) => (
-                    <option key={routine.id} value={routine.id}>
-                      {routine.name} ({routine.exercises.length})
-                    </option>
-                  ))}
-                </select>
-                <button
-                  className="rounded-2xl bg-emerald-500 px-4 py-3 font-medium text-white"
-                  disabled={!appState.currentSession.routineId}
-                  onClick={() => appState.currentSession.routineId && applyRoutine(appState.currentSession.routineId)}
-                >
-                  Cargar rutina
-                </button>
-              </div>
-              <p className="mt-3 text-sm text-slate-400">
-                Si la sesión ya tiene ejercicios, te preguntará si quieres reemplazarlos o agregarlos al final.
-              </p>
-            </Section>
-
-            <Section
-              title="Sesión actual"
-              right={
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    className="rounded-2xl bg-emerald-500 px-4 py-2 font-medium text-white"
-                    onClick={() =>
-                      updateCurrentSession({
-                        date: todayKey(),
-                        startTime: nowIso(),
-                        endTime: null,
-                      })
-                    }
-                  >
-                    Marcar inicio ahora
-                  </button>
-                  <button
-                    className="rounded-2xl bg-amber-500 px-4 py-2 font-medium text-slate-950"
-                    onClick={() => {
-                      addCompletedDate(appState.currentSession.date || todayKey());
-                      updateCurrentSession({ endTime: nowIso() });
-                    }}
-                  >
-                    Marcar fin ahora
-                  </button>
-                  <button className="rounded-2xl bg-slate-700 px-4 py-2 font-medium text-white" onClick={archiveSession}>
-                    Guardar en historial
-                  </button>
-                  <button className="rounded-2xl bg-rose-500 px-4 py-2 font-medium text-white" onClick={createNewSession}>
-                    Nueva sesión
-                  </button>
-                </div>
-              }
-            >
-              <div className="grid gap-3 md:grid-cols-5">
-                <StatCard label="Fecha" value={formatDateKey(appState.currentSession.date)} />
-                <StatCard label="Inicio" value={formatTime(appState.currentSession.startTime)} />
-                <StatCard label="Fin" value={formatTime(appState.currentSession.endTime)} />
-                <StatCard label="Ejercicios listos" value={`${doneCount} / ${appState.currentSession.exercises.length}`} />
-                <StatCard label="Peso corporal" value={appState.currentSession.bodyweight !== null ? `${appState.currentSession.bodyweight} kg` : "—"} />
-              </div>
-
-              <div className="mt-4 flex flex-wrap items-center gap-3">
-                <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-200">
-                  Rutina seleccionada: {appState.currentSession.routineName || "Ninguna"}
-                </span>
-                <button
-                  className="rounded-xl bg-slate-700 px-3 py-2 text-sm text-white"
-                  onClick={() => updateCurrentSession({ routineId: null, routineName: null })}
-                >
-                  Quitar selección
-                </button>
-              </div>
-
-              <div className="mt-4 grid gap-3 md:grid-cols-4">
-                <label className="text-sm text-slate-300">
-                  <div className="mb-2 flex items-center gap-2 text-slate-400">
-                    <Clock3 className="h-4 w-4" /> Inicio manual
-                  </div>
-                  <input
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                    type="datetime-local"
-                    value={isoToDatetimeLocal(appState.currentSession.startTime)}
-                    onChange={(e) =>
-                      updateCurrentSession({
-                        startTime: datetimeLocalToIso(e.target.value),
-                        date: localDateFromDatetimeLocal(e.target.value) || appState.currentSession.date,
-                      })
-                    }
-                  />
-                </label>
-                <label className="text-sm text-slate-300">
-                  <div className="mb-2 flex items-center gap-2 text-slate-400">
-                    <Clock3 className="h-4 w-4" /> Fin manual
-                  </div>
-                  <input
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                    type="datetime-local"
-                    value={isoToDatetimeLocal(appState.currentSession.endTime)}
-                    onChange={(e) =>
-                      updateCurrentSession({
-                        endTime: datetimeLocalToIso(e.target.value),
-                        date: localDateFromDatetimeLocal(e.target.value) || appState.currentSession.date,
-                      })
-                    }
-                  />
-                </label>
-                <label className="text-sm text-slate-300">
-                  <div className="mb-2 text-slate-400">Peso corporal</div>
-                  <input
-                    className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                    type="number"
-                    step="0.1"
-                    placeholder="Ej: 82.4"
-                    value={appState.currentSession.bodyweight ?? ""}
-                    onChange={(e) => updateCurrentSession({ bodyweight: toNumberOrNull(e.target.value) })}
-                  />
-                </label>
-                <div className="flex items-end">
-                  <div className="w-full rounded-2xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-center text-sm text-slate-400">
-                    Guardado local automático
-                  </div>
-                </div>
-              </div>
-            </Section>
-
-            <div className="grid gap-4 lg:grid-cols-[430px_1fr]">
-              <Section
-                title="Agregar ejercicio manualmente"
-                right={
-                  <button
-                    className="rounded-2xl bg-slate-700 px-4 py-2 text-sm text-white"
-                    onClick={() => updateUi({ isExerciseFormOpen: !appState.ui.isExerciseFormOpen })}
-                  >
-                    <span className="inline-flex items-center gap-2">
-                      {appState.ui.isExerciseFormOpen ? "Ocultar formulario" : "Mostrar formulario"}
-                      <ChevronDown className={cx("h-4 w-4 transition", appState.ui.isExerciseFormOpen && "rotate-180")} />
-                    </span>
-                  </button>
-                }
-              >
-                <p className="mb-3 text-sm text-slate-400">
-                  Úsalo solo cuando necesites agregar ejercicios fuera de la rutina ya cargada.
-                </p>
-
-                {appState.ui.isExerciseFormOpen && (
-                  <div className="space-y-4">
-                    <div className="relative">
-                      <label className="mb-2 block text-sm text-slate-400">Nombre del ejercicio</label>
-                      <input
-                        className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                        value={exerciseDraft.name}
-                        onChange={(e) => setExerciseDraft((prev) => ({ ...prev, name: e.target.value }))}
-                        placeholder="Ej: Press de piernas"
-                        autoComplete="off"
-                      />
-                      {!!exerciseSuggestions.length && exerciseDraft.name.trim() && (
-                        <div className="absolute left-0 right-0 top-[calc(100%+6px)] z-20 max-h-64 overflow-auto rounded-2xl border border-slate-700 bg-slate-950 p-2 shadow-2xl">
-                          {exerciseSuggestions.map((suggestion) => (
-                            <button
-                              key={suggestion.name}
-                              className="block w-full rounded-xl px-3 py-2 text-left hover:bg-sky-500/10"
-                              type="button"
-                              onClick={() => applyExerciseTemplate(suggestion)}
-                            >
-                              <div className="font-medium text-white">{suggestion.name}</div>
-                              <div className="text-xs text-slate-400">
-                                {suggestion.configs.length} ajustes · {suggestion.images.length} imágenes
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                      <div className="mt-2 text-xs text-slate-500">
-                        Si coincide con uno existente, puedes heredar sus ajustes de máquina e imágenes.
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 md:grid-cols-2">
-                      <label>
-                        <div className="mb-2 text-sm text-slate-400">Orden (opcional)</div>
-                        <input className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3" value={exerciseDraft.order} onChange={(e) => setExerciseDraft((prev) => ({ ...prev, order: e.target.value }))} />
-                      </label>
-                      <label>
-                        <div className="mb-2 text-sm text-slate-400">Peso (opcional)</div>
-                        <input className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3" value={exerciseDraft.weight} onChange={(e) => setExerciseDraft((prev) => ({ ...prev, weight: e.target.value }))} />
-                      </label>
-                      <label>
-                        <div className="mb-2 text-sm text-slate-400">Repeticiones (opcional)</div>
-                        <input className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3" value={exerciseDraft.reps} onChange={(e) => setExerciseDraft((prev) => ({ ...prev, reps: e.target.value }))} />
-                      </label>
-                      <label>
-                        <div className="mb-2 text-sm text-slate-400">Tiempo (opcional)</div>
-                        <input className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3" value={exerciseDraft.time} onChange={(e) => setExerciseDraft((prev) => ({ ...prev, time: e.target.value }))} />
-                      </label>
-                      <label className="md:col-span-2">
-                        <div className="mb-2 text-sm text-slate-400">Series (opcional)</div>
-                        <input className="w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3" value={exerciseDraft.sets} onChange={(e) => setExerciseDraft((prev) => ({ ...prev, sets: e.target.value }))} />
-                      </label>
-                    </div>
-
-                    <label>
-                      <div className="mb-2 text-sm text-slate-400">Notas</div>
-                      <textarea
-                        className="min-h-[100px] w-full rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                        value={exerciseDraft.notes}
-                        onChange={(e) => setExerciseDraft((prev) => ({ ...prev, notes: e.target.value }))}
-                      />
-                    </label>
-
-                    <div>
-                      <div className="mb-2 text-sm font-medium text-slate-300">Configuración de máquina (opcional)</div>
-                      <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-                        <input
-                          className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                          placeholder="Ej: Respaldo"
-                          value={configDraft.key}
-                          onChange={(e) => setConfigDraft((prev) => ({ ...prev, key: e.target.value }))}
-                        />
-                        <input
-                          className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                          placeholder="Ej: 5"
-                          value={configDraft.value}
-                          onChange={(e) => setConfigDraft((prev) => ({ ...prev, value: e.target.value }))}
-                        />
-                        <button className="rounded-2xl bg-sky-500 px-4 py-3 font-medium text-white" onClick={addConfig}>
-                          Agregar
-                        </button>
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {pendingConfigs.length ? (
-                          pendingConfigs.map((cfg) => (
-                            <div key={cfg.id} className="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-950 px-3 py-2 text-sm">
-                              <span>
-                                <strong>{cfg.key}:</strong> {cfg.value}
-                              </span>
-                              <button onClick={() => setPendingConfigs((prev) => prev.filter((item) => item.id !== cfg.id))}>
-                                <X className="h-4 w-4 text-rose-300" />
-                              </button>
-                            </div>
-                          ))
-                        ) : (
-                          <div className="text-sm text-slate-500">Aún no agregas configuraciones para este ejercicio.</div>
-                        )}
-                      </div>
-                    </div>
-
-                    {(pendingConfigs.length > 0 || pendingTemplateImages.length > 0) && (
-                      <div className="rounded-2xl border border-slate-700 bg-slate-950/60 p-3 text-sm text-slate-300">
-                        Se cargaron datos desde un ejercicio existente.
-                      </div>
-                    )}
-
-                    {pendingTemplateImages.length > 0 && (
-                      <div>
-                        <div className="mb-2 text-sm font-medium text-slate-300">Imágenes heredadas</div>
-                        <div className="grid grid-cols-3 gap-3 md:grid-cols-4">
-                          {pendingTemplateImages.map((image, index) => (
-                            <div key={`template-${index}`} className="relative overflow-hidden rounded-2xl border border-slate-700 bg-slate-950">
-                              <img src={image} alt={`heredada-${index}`} className="aspect-square w-full cursor-zoom-in object-cover" onClick={() => setLightboxImage(image)} />
-                              <button className="absolute right-2 top-2 rounded-full bg-black/70 p-1 text-white" onClick={() => setPendingTemplateImages((prev) => prev.filter((_, idx) => idx !== index))}>
-                                <X className="h-3 w-3" />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    <div>
-                      <div className="mb-2 text-sm font-medium text-slate-300">Imágenes referenciales</div>
-                      <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-600 bg-slate-950/70 px-4 py-6 text-slate-300">
-                        <ImageIcon className="h-4 w-4" />
-                        <span>{uploadFiles.length ? `${uploadFiles.length} imágenes seleccionadas` : "Elegir imágenes"}</span>
-                        <input
-                          type="file"
-                          multiple
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(e) => setUploadFiles(Array.from(e.target.files || []))}
-                        />
-                      </label>
-                    </div>
-
-                    <button className="w-full rounded-2xl bg-emerald-500 px-4 py-3 font-medium text-white" onClick={saveExercise}>
-                      Guardar ejercicio
-                    </button>
-                  </div>
-                )}
-              </Section>
-
-              <Section
-                title="Ejercicios de hoy"
-                right={
-                  <div className="flex flex-wrap gap-2">
-                    <button className="rounded-xl bg-slate-700 px-3 py-2 text-sm text-white" onClick={() => updateUi({ sortMode: "order" })}>
-                      Ordenar por orden
-                    </button>
-                    <button className="rounded-xl bg-slate-700 px-3 py-2 text-sm text-white" onClick={() => updateUi({ sortMode: "status" })}>
-                      Pendientes primero
-                    </button>
-                    <button
-                      className="rounded-xl bg-rose-500 px-3 py-2 text-sm text-white"
-                      onClick={() => {
-                        if (!window.confirm("Se borrarán solo los ejercicios de la sesión actual.")) return;
-                        updateCurrentSession({
-                          exercises: [],
-                          startTime: null,
-                          endTime: null,
-                          bodyweight: null,
-                          routineId: null,
-                          routineName: null,
-                        });
-                      }}
-                    >
-                      Vaciar sesión
-                    </button>
-                  </div>
-                }
-              >
-                <p className="mb-3 text-sm text-slate-400">
-                  Puedes completar ejercicios en cualquier orden. El número sigue representando el orden planificado.
-                </p>
-
-                <div className="space-y-4">
-                  {sortedExercises.length ? (
-                    sortedExercises.map((exercise) => (
-                      <ExerciseCard
-                        key={exercise.id}
-                        exercise={exercise}
-                        mode="current"
-                        onToggleDone={() =>
-                          updateCurrentSession({
-                            exercises: appState.currentSession.exercises.map((item) =>
-                              item.id === exercise.id
-                                ? { ...item, done: !item.done, doneAt: !item.done ? nowIso() : null }
-                                : item
-                            ),
-                          })
-                        }
-                        onDelete={() =>
-                          updateCurrentSession({
-                            exercises: normalizeExerciseOrders(
-                              appState.currentSession.exercises.filter((item) => item.id !== exercise.id)
-                            ),
-                          })
-                        }
-                        onMoveUp={() => {
-                          const ordered = [...appState.currentSession.exercises].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
-                          const index = ordered.findIndex((item) => item.id === exercise.id);
-                          if (index <= 0) return;
-                          const currentOrder = ordered[index].order;
-                          ordered[index].order = ordered[index - 1].order;
-                          ordered[index - 1].order = currentOrder;
-                          updateCurrentSession({ exercises: normalizeExerciseOrders([...ordered]) });
-                        }}
-                        onMoveDown={() => {
-                          const ordered = [...appState.currentSession.exercises].sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
-                          const index = ordered.findIndex((item) => item.id === exercise.id);
-                          if (index < 0 || index >= ordered.length - 1) return;
-                          const currentOrder = ordered[index].order;
-                          ordered[index].order = ordered[index + 1].order;
-                          ordered[index + 1].order = currentOrder;
-                          updateCurrentSession({ exercises: normalizeExerciseOrders([...ordered]) });
-                        }}
-                        onOpenImage={setLightboxImage}
-                        onRemovePhoto={(photoIndex) =>
-                          updateCurrentSession({
-                            exercises: appState.currentSession.exercises.map((item) =>
-                              item.id === exercise.id
-                                ? { ...item, images: item.images.filter((_, idx) => idx !== photoIndex) }
-                                : item
-                            ),
-                          })
-                        }
-                      />
-                    ))
-                  ) : (
-                    <div className="text-sm text-slate-500">Todavía no agregas ejercicios para esta sesión.</div>
-                  )}
-                </div>
-              </Section>
-            </div>
-          </div>
-        )}
-
-        {appState.ui.activeTab === "routines" && (
-          <div className="space-y-4">
-            <Section title="Crear o actualizar rutina" right={<span className="text-sm text-slate-400">{appState.routines.length} rutinas</span>}>
-              <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-                <input
-                  className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                  placeholder="Nombre de rutina"
-                  value={routineDraft.name}
-                  onChange={(e) => setRoutineDraft((prev) => ({ ...prev, name: e.target.value }))}
-                />
-                <input
-                  className="rounded-2xl border border-slate-700 bg-slate-950 px-4 py-3"
-                  placeholder="Notas de rutina"
-                  value={routineDraft.notes}
-                  onChange={(e) => setRoutineDraft((prev) => ({ ...prev, notes: e.target.value }))}
-                />
-                <button className="rounded-2xl bg-violet-500 px-4 py-3 font-medium text-white" onClick={saveRoutine}>
-                  Guardar rutina
-                </button>
-              </div>
-              <p className="mt-3 text-sm text-slate-400">
-                El siguiente paso natural sería separar esto en componentes, servicios de persistencia y utilidades.
-              </p>
-            </Section>
-
-            <Section title="Rutinas guardadas" right={<span className="text-sm text-slate-400">{appState.routines.length} rutinas</span>}>
-              <div className="space-y-4">
-                {appState.routines.length ? (
-                  appState.routines.map((routine) => (
-                    <div key={routine.id} className="rounded-3xl border border-slate-700 bg-gradient-to-b from-slate-800/95 to-slate-900/95 p-4">
-                      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-200">
-                              Plantilla
-                            </span>
-                            <span className="text-lg font-semibold text-white">{routine.name}</span>
-                            {appState.currentSession.routineId === routine.id && (
-                              <span className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200">
-                                Seleccionada
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-2 text-sm text-slate-400">
-                            {routine.exercises.length} ejercicios · Actualizada {formatDateTime(routine.updatedAt)}
-                          </div>
-                          <div className="mt-1 text-sm text-slate-300">{routine.notes || "Sin notas."}</div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button className="rounded-xl bg-emerald-500 px-3 py-2 text-sm font-medium text-white" onClick={() => applyRoutine(routine.id)}>
-                            Usar en sesión
-                          </button>
-                          <button
-                            className="rounded-xl bg-rose-500 px-3 py-2 text-sm text-white"
-                            onClick={() => {
-                              if (!window.confirm("Se eliminará esta rutina guardada.")) return;
-                              setAppState((prev) => ({
-                                ...prev,
-                                routines: prev.routines.filter((item) => item.id !== routine.id),
-                                currentSession:
-                                  prev.currentSession.routineId === routine.id
-                                    ? { ...prev.currentSession, routineId: null, routineName: null }
-                                    : prev.currentSession,
-                              }));
-                            }}
-                          >
-                            Eliminar
-                          </button>
-                        </div>
-                      </div>
-
-                      <details className="rounded-2xl border border-slate-700 bg-slate-950/40 p-3">
-                        <summary className="cursor-pointer font-medium text-white">Ver ejercicios</summary>
-                        <div className="mt-4 space-y-4">
-                          {routine.exercises.map((exercise) => (
-                            <ExerciseCard
-                              key={exercise.id}
-                              exercise={exercise}
-                              mode="routine"
-                              onCopy={() =>
-                                updateCurrentSession({
-                                  exercises: normalizeExerciseOrders([
-                                    ...appState.currentSession.exercises,
-                                    cloneExerciseForSession(exercise, nextOrder),
-                                  ]),
-                                })
-                              }
-                              onOpenImage={setLightboxImage}
-                            />
-                          ))}
-                        </div>
-                      </details>
-                    </div>
-                  ))
-                ) : (
-                  <div className="text-sm text-slate-500">Todavía no guardas rutinas.</div>
-                )}
-              </div>
-            </Section>
-          </div>
-        )}
-
-        {appState.ui.activeTab === "calendar" && (
-          <Section title="Calendario de entrenamiento">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <button
-                className="rounded-xl bg-slate-700 px-4 py-2 text-sm text-white"
-                onClick={() => {
-                  const month = appState.ui.calendarMonth - 1;
-                  if (month < 0) {
-                    updateUi({ calendarMonth: 11, calendarYear: appState.ui.calendarYear - 1 });
-                  } else {
-                    updateUi({ calendarMonth: month });
-                  }
-                }}
-              >
-                ◀ Mes anterior
-              </button>
-              <div className="text-lg font-semibold">{calendarMonthLabel}</div>
-              <button
-                className="rounded-xl bg-slate-700 px-4 py-2 text-sm text-white"
-                onClick={() => {
-                  const month = appState.ui.calendarMonth + 1;
-                  if (month > 11) {
-                    updateUi({ calendarMonth: 0, calendarYear: appState.ui.calendarYear + 1 });
-                  } else {
-                    updateUi({ calendarMonth: month });
-                  }
-                }}
-              >
-                Mes siguiente ▶
-              </button>
-            </div>
-
-            <div className="grid grid-cols-7 gap-2">{calendarCells}</div>
-
-            <div className="mt-6 rounded-3xl border border-slate-700 bg-slate-950/50 p-4">
-              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-xl font-semibold text-white">Historial de peso corporal</h3>
-                  <div className="text-sm text-slate-400">{weightSeries.length} registros</div>
-                </div>
-              </div>
-
-              {weightSeries.length ? (
-                <div className="h-[260px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={weightSeries}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,.15)" />
-                      <XAxis dataKey="fecha" stroke="#94a3b8" />
-                      <YAxis stroke="#94a3b8" domain={["auto", "auto"]} />
-                      <Tooltip />
-                      <Line type="monotone" dataKey="peso" stroke="#38bdf8" strokeWidth={3} dot={{ r: 4 }} />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              ) : (
-                <div className="text-sm text-slate-500">Guarda sesiones con peso corporal para ver la evolución aquí.</div>
-              )}
-            </div>
-          </Section>
-        )}
-
-        {appState.ui.activeTab === "history" && (
-          <Section title="Historial" right={<span className="text-sm text-slate-400">{appState.historySessions.length} sesiones</span>}>
-            <div className="space-y-4">
-              {appState.historySessions.length ? (
-                appState.historySessions.map((session) => {
-                  const completed = session.exercises.filter((exercise) => exercise.done).length;
-                  return (
-                    <div key={session.id} className="rounded-3xl border border-slate-700 bg-gradient-to-b from-slate-800/95 to-slate-900/95 p-4">
-                      <div className="mb-3 flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="rounded-full border border-violet-500/30 bg-violet-500/10 px-3 py-1 text-xs text-violet-200">
-                              {formatDateKey(session.date)}
-                            </span>
-                            <span className="font-semibold text-white">{session.exercises.length} ejercicios</span>
-                          </div>
-                          <div className="mt-2 text-sm text-slate-400">
-                            Inicio {formatTime(session.startTime)} · Fin {formatTime(session.endTime)} · Peso {session.bodyweight !== null ? `${session.bodyweight} kg` : "—"} · Rutina {session.routineName || "Libre"} · Completados {completed}/{session.exercises.length}
-                          </div>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            className="rounded-xl bg-slate-700 px-3 py-2 text-sm text-white"
-                            onClick={() =>
-                              setAppState((prev) => ({
-                                ...prev,
-                                currentSession: {
-                                  ...prev.currentSession,
-                                  routineId: session.routineId,
-                                  routineName: session.routineName,
-                                  exercises: normalizeExerciseOrders([
-                                    ...prev.currentSession.exercises,
-                                    ...session.exercises.map((exercise, index) =>
-                                      cloneExerciseForSession(exercise, nextOrder + index)
-                                    ),
-                                  ]),
-                                },
-                                ui: { ...prev.ui, activeTab: "train" },
-                              }))
-                            }
-                          >
-                            Copiar sesión completa
-                          </button>
-                          <button
-                            className="rounded-xl bg-rose-500 px-3 py-2 text-sm text-white"
-                            onClick={() => {
-                              if (!window.confirm("Se eliminará esta sesión del historial.")) return;
-                              setAppState((prev) => {
-                                const historySessions = prev.historySessions.filter((item) => item.id !== session.id);
-                                const completedDates = [
-                                  ...new Set(historySessions.filter((item) => item.exercises.length).map((item) => item.date)),
-                                ];
-                                return { ...prev, historySessions, completedDates };
-                              });
-                            }}
-                          >
-                            Eliminar
-                          </button>
-                        </div>
-                      </div>
-
-                      <details className="rounded-2xl border border-slate-700 bg-slate-950/40 p-3">
-                        <summary className="cursor-pointer font-medium text-white">Ver ejercicios</summary>
-                        <div className="mt-4 space-y-4">
-                          {session.exercises.map((exercise) => (
-                            <ExerciseCard
-                              key={exercise.id}
-                              exercise={exercise}
-                              mode="history"
-                              onCopy={() =>
-                                updateCurrentSession({
-                                  exercises: normalizeExerciseOrders([
-                                    ...appState.currentSession.exercises,
-                                    cloneExerciseForSession(exercise, nextOrder),
-                                  ]),
-                                })
-                              }
-                              onOpenImage={setLightboxImage}
-                            />
-                          ))}
-                        </div>
-                      </details>
-                    </div>
-                  );
-                })
-              ) : (
-                <div className="text-sm text-slate-500">Todavía no hay sesiones en el historial.</div>
-              )}
-            </div>
-          </Section>
-        )}
-
-        {appState.ui.activeTab === "backup" && (
-          <Section title="Respaldo y sincronización manual">
-            <p className="mb-4 text-sm text-slate-400">
-              Esta base ya permite exportar e importar todo el estado. El siguiente paso para una PWA real sería agregar manifest, service worker y un build con Vite PWA.
-            </p>
-            <div className="flex flex-wrap gap-3">
-              <button className="rounded-2xl bg-sky-500 px-4 py-3 font-medium text-white" onClick={exportBackup}>
-                Exportar respaldo
-              </button>
-              <button className="rounded-2xl bg-violet-500 px-4 py-3 font-medium text-white" onClick={() => fileImportRef.current?.click()}>
-                Importar respaldo
-              </button>
-              <input
-                ref={fileImportRef}
-                type="file"
-                accept="application/json"
-                className="hidden"
-                onChange={(e) => importBackup(e.target.files?.[0] || null)}
-              />
-            </div>
-          </Section>
-        )}
-      </div>
-
-      {lightboxImage && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/95 p-6" onClick={() => setLightboxImage(null)}>
-          <button className="absolute right-5 top-5 rounded-full bg-rose-500 p-2 text-white" onClick={() => setLightboxImage(null)}>
-            <X className="h-4 w-4" />
-          </button>
-          <img src={lightboxImage} alt="Imagen ampliada" className="max-h-full max-w-full rounded-3xl shadow-2xl" />
+        <div className="rounded-2xl border border-slate-700 bg-slate-900/90 p-4 text-slate-300">
+          Reemplaza tu <strong>src/App.tsx</strong> por este archivo completo.
         </div>
-      )}
+      </div>
     </div>
   );
 }
