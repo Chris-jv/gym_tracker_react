@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRegisterSW } from "virtual:pwa-register/react";
 import Dexie, { Table } from "dexie";
 import {
   CalendarDays,
@@ -260,22 +259,16 @@ const normalizeState = (raw?: Partial<AppState> | null): AppState => {
   return {
     ...base,
     ...(raw || {}),
-    routines: Array.isArray(raw?.routines)
-      ? raw.routines.map((r) => normalizeRoutine(r)).filter((r): r is Routine => !!r)
-      : [],
+    routines: Array.isArray(raw?.routines) ? raw!.routines : [],
     currentSession: {
       ...base.currentSession,
       ...(raw?.currentSession || {}),
       exercises: Array.isArray(raw?.currentSession?.exercises)
-        ? raw.currentSession.exercises
-            .map((e, index) => normalizeExercise(e, index + 1))
-            .filter((e): e is Exercise => !!e)
+        ? raw!.currentSession!.exercises
         : [],
     },
-    historySessions: Array.isArray(raw?.historySessions)
-      ? raw.historySessions.map((s) => normalizeSession(s, todayKey()))
-      : [],
-    completedDates: Array.isArray(raw?.completedDates) ? raw.completedDates : [],
+    historySessions: Array.isArray(raw?.historySessions) ? raw!.historySessions : [],
+    completedDates: Array.isArray(raw?.completedDates) ? raw!.completedDates : [],
     ui: {
       ...base.ui,
       ...(raw?.ui || {}),
@@ -303,9 +296,7 @@ const normalizeExercise = (exercise: unknown, fallbackOrder?: number): Exercise 
   if (!name) return null;
 
   const configs = Array.isArray(raw.configs)
-    ? raw.configs
-        .map((item) => normalizeConfig(item))
-        .filter((item): item is MachineConfig => !!item)
+    ? raw.configs.map((item) => normalizeConfig(item)).filter((item): item is MachineConfig => !!item)
     : [];
 
   const images = Array.isArray(raw.images)
@@ -551,7 +542,7 @@ const getTemplateScore = (exercise: ExerciseTemplate) => {
   if (exercise.configs.length) score += 10;
   if (exercise.images.length) score += 10;
   if (exercise.notes) score += 2;
-  if (exercise.time !== null) score += 1;
+  if (exercise.time) score += 1;
   if (exercise.reps !== null) score += 1;
   if (exercise.weight !== null) score += 1;
   return score;
@@ -567,11 +558,13 @@ const buildExerciseLibrary = (candidates: Exercise[]): ExerciseTemplate[] => {
     const candidate: ExerciseTemplate & { _score: number } = {
       name: exercise.name.trim(),
       notes: exercise.notes || "",
-      configs: exercise.configs.map((cfg) => ({ key: cfg.key, value: cfg.value, id: uid() })),
-      images: [...exercise.images],
-      weight: exercise.weight,
-      reps: exercise.reps,
-      time: exercise.time,
+      configs: Array.isArray(exercise.configs)
+        ? exercise.configs.map((cfg) => ({ key: cfg.key, value: cfg.value, id: uid() }))
+        : [],
+      images: Array.isArray(exercise.images) ? [...exercise.images] : [],
+      weight: exercise.weight ?? null,
+      reps: exercise.reps ?? null,
+      time: exercise.time ?? null,
       createdAt: exercise.createdAt || null,
       _score: 0,
     };
@@ -581,11 +574,7 @@ const buildExerciseLibrary = (candidates: Exercise[]): ExerciseTemplate[] => {
     const candidateTime = new Date(candidate.createdAt || 0).getTime();
     const existingTime = existing ? new Date(existing.createdAt || 0).getTime() : -Infinity;
 
-    if (
-      !existing ||
-      candidate._score > existing._score ||
-      (candidate._score === existing._score && candidateTime > existingTime)
-    ) {
+    if (!existing || candidate._score > existing._score || (candidate._score === existing._score && candidateTime > existingTime)) {
       map.set(key, candidate);
     }
   }
@@ -665,6 +654,7 @@ function ExerciseCard({
   onCopy,
   onOpenImage,
   onRemovePhoto,
+  cardRef,
 }: {
   exercise: Exercise;
   mode: "current" | "history" | "routine";
@@ -677,6 +667,7 @@ function ExerciseCard({
   onCopy?: () => void;
   onOpenImage?: (src: string) => void;
   onRemovePhoto?: (index: number) => void;
+  cardRef?: React.Ref<HTMLDivElement>;
 }) {
   const metrics = [
     ["Peso", exercise.weight !== null ? `${exercise.weight} kg` : "—"],
@@ -690,15 +681,16 @@ function ExerciseCard({
           ? formatTime(exercise.doneAt)
           : "Pendiente"
         : mode === "routine"
-          ? exercise.order ?? "—"
-          : exercise.doneAt
-            ? formatTime(exercise.doneAt)
-            : "Pendiente",
+        ? exercise.order ?? "—"
+        : exercise.doneAt
+        ? formatTime(exercise.doneAt)
+        : "Pendiente",
     ],
   ] as const;
 
   return (
     <div
+      ref={cardRef}
       className={cx(
         "rounded-3xl border bg-gradient-to-b from-slate-800/95 to-slate-900/95 p-4",
         exercise.done ? "border-emerald-500/40" : "border-slate-700"
@@ -832,20 +824,10 @@ function ExerciseCard({
 
 export default function App() {
   const [ready, setReady] = useState(false);
-  const {
-    needRefresh: [needRefresh, setNeedRefresh],
-    updateServiceWorker,
-  } = useRegisterSW({
-    onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
-      if (!registration) return;
-      registration.update();
-      setInterval(() => registration.update(), 60 * 1000);
-    },
-    onRegisterError(error: unknown) {
-      console.error("SW registration error", error);
-    },
-  });
-
+  const [needRefresh, setNeedRefresh] = useState(false);
+  const updateServiceWorker = async (_reload?: boolean) => {
+    return;
+  };
   const [appState, setAppState] = useState<AppState>(getDefaultState());
   const [exerciseDraft, setExerciseDraft] = useState<ExerciseDraft>(emptyExerciseDraft());
   const [routineDraft, setRoutineDraft] = useState<RoutineDraft>(emptyRoutineDraft());
@@ -855,6 +837,8 @@ export default function App() {
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
+  const exerciseRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const exerciseSectionRef = useRef<HTMLDivElement | null>(null);
   const fileImportRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -871,7 +855,7 @@ export default function App() {
 
   useEffect(() => {
     if (!ready) return;
-    void db.state.put({ id: STATE_ID, value: appState, updatedAt: nowIso() });
+    db.state.put({ id: STATE_ID, value: appState, updatedAt: nowIso() });
   }, [appState, ready]);
 
   const updateUi = (patch: Partial<UIState>) => {
@@ -893,7 +877,10 @@ export default function App() {
     return list;
   }, [appState]);
 
-  const exerciseLibrary = useMemo(() => buildExerciseLibrary(allExerciseCandidates), [allExerciseCandidates]);
+  const exerciseLibrary = useMemo(
+    () => buildExerciseLibrary(allExerciseCandidates),
+    [allExerciseCandidates]
+  );
 
   const exerciseSuggestions = useMemo(() => {
     const query = exerciseDraft.name.trim().toLowerCase();
@@ -949,6 +936,22 @@ export default function App() {
         : [],
     [appState.historySessions, selectedCalendarDate]
   );
+
+  const scrollToNextExerciseOrTop = (currentExerciseId: string) => {
+    const currentIndex = sortedExercises.findIndex((item) => item.id === currentExerciseId);
+    const nextExerciseId =
+      currentIndex >= 0 && currentIndex < sortedExercises.length - 1
+        ? sortedExercises[currentIndex + 1].id
+        : null;
+
+    window.setTimeout(() => {
+      if (nextExerciseId && exerciseRefs.current[nextExerciseId]) {
+        exerciseRefs.current[nextExerciseId]?.scrollIntoView({ behavior: "smooth", block: "center" });
+        return;
+      }
+      exerciseSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 140);
+  };
 
   const resetExerciseDraft = () => {
     setExerciseDraft(emptyExerciseDraft());
@@ -1117,11 +1120,12 @@ export default function App() {
     const routine = appState.routines.find((item) => item.id === routineId);
     if (!routine) return;
 
-    const replaceMode =
-      !appState.currentSession.exercises.length ||
-      window.confirm(
+    let replaceMode = true;
+    if (appState.currentSession.exercises.length > 0) {
+      replaceMode = window.confirm(
         "¿Quieres reemplazar la sesión actual con esta rutina? Aceptar = reemplazar. Cancelar = agregar al final."
       );
+    }
 
     setAppState((prev) => ({
       ...prev,
@@ -1224,6 +1228,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-slate-100">
+      <style>{`
+        button {
+          transition: transform 0.14s ease, filter 0.14s ease, opacity 0.14s ease, box-shadow 0.14s ease;
+          -webkit-tap-highlight-color: transparent;
+        }
+        button:active:not(:disabled) {
+          transform: scale(0.98) translateY(1px);
+          filter: brightness(1.08);
+        }
+      `}</style>
       <div className="mx-auto max-w-7xl px-4 py-6 pb-24">
         {needRefresh && (
           <UpdateBanner
@@ -1233,7 +1247,6 @@ export default function App() {
             }}
           />
         )}
-
         <section className="mb-4 rounded-[28px] border border-slate-700 bg-gradient-to-r from-emerald-500/10 to-sky-500/10 p-5 shadow-2xl">
           <h1 className="text-3xl font-bold text-white">Gym Tracker</h1>
         </section>
@@ -1554,6 +1567,7 @@ export default function App() {
                 )}
               </Section>
 
+              <div ref={exerciseSectionRef}>
               <Section
                 title="Ejercicios de hoy"
                 right={
@@ -1594,7 +1608,10 @@ export default function App() {
                         key={exercise.id}
                         exercise={exercise}
                         mode="current"
-                        onToggleDone={() =>
+                        cardRef={(el) => {
+                          exerciseRefs.current[exercise.id] = el;
+                        }}
+                        onToggleDone={() => {
                           updateCurrentSession({
                             exercises: appState.currentSession.exercises.map((item) => {
                               if (item.id !== exercise.id) return item;
@@ -1606,9 +1623,12 @@ export default function App() {
                                 completedSets: nextDone ? item.sets ?? 0 : 0,
                               };
                             }),
-                          })
-                        }
-                        onCompleteSet={() =>
+                          });
+                          if (!exercise.done) {
+                            scrollToNextExerciseOrTop(exercise.id);
+                          }
+                        }}
+                        onCompleteSet={() => {
                           updateCurrentSession({
                             exercises: appState.currentSession.exercises.map((item) => {
                               if (item.id !== exercise.id || !item.sets) return item;
@@ -1621,8 +1641,9 @@ export default function App() {
                                 doneAt: done ? nowIso() : null,
                               };
                             }),
-                          })
-                        }
+                          });
+                          scrollToNextExerciseOrTop(exercise.id);
+                        }}
                         onUndoSet={() =>
                           updateCurrentSession({
                             exercises: appState.currentSession.exercises.map((item) => {
@@ -1679,6 +1700,7 @@ export default function App() {
                   )}
                 </div>
               </Section>
+              </div>
             </div>
           </div>
         )}
