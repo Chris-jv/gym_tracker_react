@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useRegisterSW } from "virtual:pwa-register/react";
 import Dexie, { Table } from "dexie";
 import {
   CalendarDays,
@@ -822,19 +821,10 @@ function ExerciseCard({
 
 export default function App() {
   const [ready, setReady] = useState(false);
-  const {
-    needRefresh: [needRefresh, setNeedRefresh],
-    updateServiceWorker,
-  } = useRegisterSW({
-    onRegisteredSW(_swUrl: string, registration: ServiceWorkerRegistration | undefined) {
-      if (!registration) return;
-      registration.update();
-      setInterval(() => registration.update(), 60 * 1000);
-    },
-    onRegisterError(error: unknown) {
-      console.error("SW registration error", error);
-    },
-  });
+  const [needRefresh, setNeedRefresh] = useState(false);
+  const updateServiceWorker = async (_reload?: boolean) => {
+    return;
+  };
   const [appState, setAppState] = useState<AppState>(getDefaultState());
   const [exerciseDraft, setExerciseDraft] = useState<ExerciseDraft>(emptyExerciseDraft());
   const [routineDraft, setRoutineDraft] = useState<RoutineDraft>(emptyRoutineDraft());
@@ -941,6 +931,7 @@ export default function App() {
         : [],
     [appState.historySessions, selectedCalendarDate]
   );
+
 
   const resetExerciseDraft = () => {
     setExerciseDraft(emptyExerciseDraft());
@@ -1217,6 +1208,16 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-950 to-slate-900 text-slate-100">
+      <style>{`
+        button {
+          transition: transform 0.14s ease, filter 0.14s ease, opacity 0.14s ease, box-shadow 0.14s ease;
+          -webkit-tap-highlight-color: transparent;
+        }
+        button:active:not(:disabled) {
+          transform: scale(0.98) translateY(1px);
+          filter: brightness(1.08);
+        }
+      `}</style>
       <div className="mx-auto max-w-7xl px-4 py-6 pb-24">
         {needRefresh && (
           <UpdateBanner
@@ -1545,7 +1546,6 @@ export default function App() {
                   </div>
                 )}
               </Section>
-
               <Section
                 title="Ejercicios de hoy"
                 right={
@@ -1586,7 +1586,7 @@ export default function App() {
                         key={exercise.id}
                         exercise={exercise}
                         mode="current"
-                        onToggleDone={() =>
+                        onToggleDone={() => {
                           updateCurrentSession({
                             exercises: appState.currentSession.exercises.map((item) => {
                               if (item.id !== exercise.id) return item;
@@ -1598,9 +1598,9 @@ export default function App() {
                                 completedSets: nextDone ? item.sets ?? 0 : 0,
                               };
                             }),
-                          })
-                        }
-                        onCompleteSet={() =>
+                          });
+                        }}
+                        onCompleteSet={() => {
                           updateCurrentSession({
                             exercises: appState.currentSession.exercises.map((item) => {
                               if (item.id !== exercise.id || !item.sets) return item;
@@ -1613,8 +1613,8 @@ export default function App() {
                                 doneAt: done ? nowIso() : null,
                               };
                             }),
-                          })
-                        }
+                          });
+                        }}
                         onUndoSet={() =>
                           updateCurrentSession({
                             exercises: appState.currentSession.exercises.map((item) => {
